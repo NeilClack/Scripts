@@ -6,7 +6,8 @@
 set -euo pipefail
 
 # ── Configuration ────────────────────────────────────────────────────
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 REPO_PASSWORD_GPG="${SCRIPT_DIR}/.repo-password.gpg"
 EXCLUDE_FILE="${SCRIPT_DIR}/backup.exclude"
 LOG_DIR="${HOME}/.local/share/restic-backup"
