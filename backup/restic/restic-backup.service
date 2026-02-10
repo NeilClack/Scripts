@@ -1,0 +1,29 @@
+[Unit]
+Description=Restic backup to Backblaze B2
+Wants=network-online.target
+After=network-online.target
+
+# Don't start if another backup is already running
+ConditionPathExists=!%h/.local/share/restic-backup/lock
+
+[Service]
+Type=oneshot
+Nice=10
+IOSchedulingClass=idle
+EnvironmentFile=%h/.config/restic/b2.env
+ExecStart=%h/Scripts/backup/restic/backup.sh backup
+ExecStartPost=%h/Scripts/backup/restic/backup.sh prune
+
+# Prevent runaway resource usage
+CPUQuota=50%%
+MemoryMax=1G
+
+# Restart on transient failures (network blip, etc.)
+Restart=on-failure
+RestartSec=300
+
+# Timeout after 2 hours (adjust for large initial backup)
+TimeoutStartSec=7200
+
+[Install]
+WantedBy=default.target

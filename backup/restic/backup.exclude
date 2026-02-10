@@ -1,0 +1,50 @@
+# Restic backup exclude patterns
+# Used by ~/Scripts/backup/restic/backup.sh
+
+# ── Explicitly excluded directories ──────────────────────────────────
+Downloads
+
+# ── Caches & temp files ──────────────────────────────────────────────
+.cache
+.Cache
+**/__pycache__
+**/.pytest_cache
+**/*.pyc
+**/*.pyo
+**/cachedir.tag
+
+# ── Package manager / build artifacts ────────────────────────────────
+**/node_modules
+**/.venv
+**/venv
+**/.env
+**/target/
+**/_build/
+**/build/
+**/dist/
+**/*.egg-info
+
+# ── Compiled objects ─────────────────────────────────────────────────
+**/*.o
+**/*.so
+**/*.a
+**/*.dll
+**/*.dylib
+
+# ── Disk images ──────────────────────────────────────────────────────
+**/*.iso
+**/*.img
+**/*.qcow2
+**/*.vmdk
+
+# ── Trash & runtime ─────────────────────────────────────────────────
+.Trash*
+.local/share/Trash
+**/.git/objects/pack/*.tmp
+**/core.[0-9]*
+
+# ── Editor / IDE swap & session files ────────────────────────────────
+**/*.swp
+**/*.swo
+**/*~
+**/.*.swp
