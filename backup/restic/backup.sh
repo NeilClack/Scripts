@@ -12,21 +12,8 @@ EXCLUDE_FILE="${SCRIPT_DIR}/backup.exclude"
 LOG_DIR="${HOME}/.local/share/restic-backup"
 LOG_FILE="${LOG_DIR}/backup.log"
 
-# What to back up
-BACKUP_PATHS=(
-    "${HOME}/Work"
-    "${HOME}/Scripts"
-    "${HOME}/.config"
-    "${HOME}/.local/share"
-    "${HOME}/.ssh"
-    "${HOME}/.gnupg"
-    "${HOME}/.bashrc"
-    "${HOME}/.bash_profile"
-    "${HOME}/.profile"
-    "${HOME}/.bash_aliases"
-    "${HOME}/.gitconfig"
-    "${HOME}/.tmux.conf"
-)
+# What to back up — everything in $HOME that isn't excluded
+BACKUP_PATH="${HOME}"
 
 # Retention policy
 KEEP_DAILY=7
@@ -147,29 +134,14 @@ cmd_backup() {
     export_password
     setup_logging
 
-    # Filter to only paths that exist
-    local paths=()
-    for p in "${BACKUP_PATHS[@]}"; do
-        if [[ -e "$p" ]]; then
-            paths+=("$p")
-        else
-            warn "Skipping (not found): $p"
-        fi
-    done
-
-    if [[ ${#paths[@]} -eq 0 ]]; then
-        err "No backup paths exist. Nothing to back up."
-        exit 1
-    fi
-
-    info "Backing up ${#paths[@]} paths to ${RESTIC_REPOSITORY}"
+    info "Backing up ${BACKUP_PATH} to ${RESTIC_REPOSITORY}"
     restic backup \
         --exclude-file="$EXCLUDE_FILE" \
         --exclude-caches \
         --one-file-system \
         --tag "scheduled" \
         --verbose \
-        "${paths[@]}"
+        "$BACKUP_PATH"
 
     ok "Backup completed — $(date '+%Y-%m-%d %H:%M:%S')"
 }
