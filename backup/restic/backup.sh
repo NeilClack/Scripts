@@ -292,7 +292,7 @@ cmd_install() {
 }
 
 cmd_help() {
-    cat <<EOF
+    echo -e "
 
 ${BOLD}restic-backup${NC} — Encrypted incremental backup to Backblaze B2
 
@@ -343,8 +343,7 @@ ${BOLD}BROWSE BACKUPS${NC}
     backup.sh mount                # Mount at ~/mnt/restic
     ls ~/mnt/restic/snapshots/     # Browse snapshots like directories
     # Ctrl+C to unmount
-
-EOF
+"
 }
 
 # ── Main dispatch ────────────────────────────────────────────────────
