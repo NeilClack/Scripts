@@ -2,12 +2,11 @@
 Description=Run restic backup every 30 minutes
 
 [Timer]
-# Run 30 minutes after boot, then every 30 minutes
+# Run 5 minutes after boot, then every 30 minutes
 OnBootSec=5min
 OnUnitActiveSec=30min
 
 # Randomize within a 2-minute window to avoid thundering herd
-# (matters if you ever run this on multiple machines against the same bucket)
 RandomizedDelaySec=120
 
 # Catch up on missed runs (e.g., laptop was asleep)

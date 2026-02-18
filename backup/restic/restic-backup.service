@@ -11,11 +11,15 @@ Type=oneshot
 Nice=10
 IOSchedulingClass=idle
 EnvironmentFile=%h/.config/restic/b2.env
+
+# Pass display session for desktop notifications
+PassEnvironment=DISPLAY WAYLAND_DISPLAY DBUS_SESSION_BUS_ADDRESS
+
 ExecStart=%h/Scripts/backup/restic/backup.sh backup
 ExecStartPost=%h/Scripts/backup/restic/backup.sh prune
 
 # Prevent runaway resource usage
-CPUQuota=50%%
+CPUQuota=50%
 MemoryMax=1G
 
 # Restart on transient failures (network blip, etc.)

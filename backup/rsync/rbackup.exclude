@@ -1,10 +1,13 @@
-# Restic backup exclude patterns
-# Used by ~/Scripts/backup/restic/backup.sh
+# rbackup exclude patterns
+# Used by ~/Scripts/backup/restic/rbackup.sh
+#
+# These mirror the restic backup.exclude patterns plus additional
+# lock files that shouldn't be copied to a local mirror.
 
 # ── Explicitly excluded directories ──────────────────────────────────
 Downloads
 
-# ── Large runtime / app data you don't need ──────────────────────────
+# ── Large runtime / app data ─────────────────────────────────────────
 .local/share/Trash
 .local/share/Steam
 .local/share/containers
@@ -55,7 +58,7 @@ snap
 # ── Podman / container storage ───────────────────────────────────────
 .config/containers/storage
 
-# ── Browser profiles (huge, not worth backing up) ────────────────────
+# ── Browser profiles ─────────────────────────────────────────────────
 .mozilla
 .config/google-chrome
 .config/chromium
@@ -66,3 +69,37 @@ snap
 **/*.swo
 **/*~
 **/.*.swp
+
+# ── Lock files ───────────────────────────────────────────────────────
+# GPG agent / keyring
+.gnupg/.lock
+.gnupg/public-keys.d/*.lock
+.gnupg/*.lock
+.local/share/keyrings/*.lock
+
+# Browser lock files
+**/SingletonLock
+**/SingletonCookie
+**/SingletonSocket
+**/.parentlock
+**/lock
+**/lockfile
+
+# Flatpak / system locks
+.local/share/flatpak/.lock
+**/.flatpak-lock
+
+# Desktop environment locks
+.dbus
+
+# Generic lock patterns
+**/*.lck
+**/*.lock
+!**/*.lockb
+!**/package-lock.json
+!**/Cargo.lock
+!**/poetry.lock
+!**/yarn.lock
+!**/Gemfile.lock
+!**/composer.lock
+!**/flake.lock

@@ -6,7 +6,6 @@
 set -euo pipefail
 
 # ── Configuration ────────────────────────────────────────────────────
-# SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 REPO_PASSWORD_GPG="${SCRIPT_DIR}/.repo-password.gpg"
 EXCLUDE_FILE="${SCRIPT_DIR}/backup.exclude"
@@ -37,6 +36,22 @@ warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 err()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 header(){ echo -e "\n${BOLD}${CYAN}── $* ──${NC}\n"; }
 
+# ── Desktop notifications ────────────────────────────────────────────
+notify() {
+    local urgency="$1" title="$2" body="$3"
+    if command -v notify-send &>/dev/null && [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
+        notify-send --urgency="$urgency" --app-name="restic-backup" "$title" "$body" 2>/dev/null || true
+    fi
+}
+
+notify_ok()   { notify "normal"   "☁️ Restic Backup" "$1"; }
+notify_err()  { notify "critical" "⚠️ Restic Backup" "$1"; }
+
+# ── Error trap ───────────────────────────────────────────────────────
+backup_trap() {
+    notify_err "Backup failed — check 'backup journal' for details"
+}
+
 # ── Environment check ────────────────────────────────────────────────
 check_deps() {
     local missing=()
@@ -59,7 +74,8 @@ check_env() {
         echo "  export B2_ACCOUNT_KEY=\"your-application-key\""
         echo "  export RESTIC_REPOSITORY=\"b2:your-bucket-name:\""
         echo ""
-        err "See: backup.sh help for setup instructions."
+        err "See: backup help for setup instructions."
+        notify_err "Environment variables not set — cannot run backup"
         exit 1
     fi
 }
@@ -68,7 +84,7 @@ check_env() {
 get_repo_password() {
     if [[ ! -f "$REPO_PASSWORD_GPG" ]]; then
         err "Encrypted password file not found: ${REPO_PASSWORD_GPG}"
-        err "Run 'backup.sh init' first to set up the repository."
+        err "Run 'backup init' first to set up the repository."
         exit 1
     fi
     gpg --quiet --decrypt "$REPO_PASSWORD_GPG" 2>/dev/null
@@ -125,10 +141,13 @@ cmd_init() {
     warn "Without it, you cannot decrypt the repo password."
     warn "Your GPG key should already be in Proton Drive — verify this now."
     echo ""
-    info "Run 'backup.sh backup' to start your first backup."
+    info "Run 'backup backup' to start your first backup."
+    notify_ok "Repository initialized successfully"
 }
 
 cmd_backup() {
+    trap backup_trap ERR
+
     header "Starting backup — $(date '+%Y-%m-%d %H:%M:%S')"
     check_deps
     check_env
@@ -145,9 +164,14 @@ cmd_backup() {
         "$BACKUP_PATH"
 
     ok "Backup completed — $(date '+%Y-%m-%d %H:%M:%S')"
+    notify_ok "Backup completed successfully"
+
+    trap - ERR
 }
 
 cmd_prune() {
+    trap backup_trap ERR
+
     header "Applying retention policy"
     check_deps
     check_env
@@ -163,6 +187,8 @@ cmd_prune() {
         --verbose
 
     ok "Prune completed."
+
+    trap - ERR
 }
 
 cmd_snapshots() {
@@ -211,6 +237,7 @@ cmd_restore() {
     mkdir -p "$target"
     restic restore "$snapshot" --target "$target" --verbose
     ok "Restored to ${target}"
+    notify_ok "Restore completed to ${target}"
 }
 
 cmd_mount() {
@@ -233,6 +260,10 @@ cmd_unlock() {
 
     restic unlock
     ok "Repository unlocked."
+}
+
+cmd_journal() {
+    journalctl --user -u restic-backup.service --no-pager -n 50
 }
 
 cmd_install() {
@@ -294,11 +325,10 @@ cmd_install() {
 
 cmd_help() {
     echo -e "
-
 ${BOLD}restic-backup${NC} — Encrypted incremental backup to Backblaze B2
 
 ${BOLD}USAGE${NC}
-    backup.sh <command> [options]
+    backup <command> [options]
 
 ${BOLD}COMMANDS${NC}
     ${GREEN}init${NC}          Generate repo password, encrypt with GPG, initialize repo
@@ -310,6 +340,7 @@ ${BOLD}COMMANDS${NC}
     ${GREEN}restore${NC}       Restore a snapshot (default: latest → ~/Restore)
     ${GREEN}mount${NC}         FUSE-mount the repo for browsing (default: ~/mnt/restic)
     ${GREEN}unlock${NC}        Remove stale locks (after interrupted backup)
+    ${GREEN}journal${NC}       Show recent systemd journal entries for the backup service
     ${GREEN}install${NC}       Walk through systemd timer setup with symlink commands
     ${GREEN}help${NC}          Show this help message
 
@@ -336,13 +367,13 @@ ${BOLD}FIRST-TIME SETUP${NC}
     7. First backup:            ./backup.sh backup
 
 ${BOLD}RESTORE EXAMPLES${NC}
-    backup.sh restore                          # Latest → ~/Restore
-    backup.sh restore latest /tmp/restore      # Latest → /tmp/restore
-    backup.sh restore abc123ef /tmp/restore    # Specific snapshot
+    backup restore                          # Latest → ~/Restore
+    backup restore latest /tmp/restore      # Latest → /tmp/restore
+    backup restore abc123ef /tmp/restore    # Specific snapshot
 
 ${BOLD}BROWSE BACKUPS${NC}
-    backup.sh mount                # Mount at ~/mnt/restic
-    ls ~/mnt/restic/snapshots/     # Browse snapshots like directories
+    backup mount                # Mount at ~/mnt/restic
+    ls ~/mnt/restic/snapshots/  # Browse snapshots like directories
     # Ctrl+C to unmount
 "
 }
@@ -362,6 +393,7 @@ main() {
         restore)    cmd_restore "$@" ;;
         mount)      cmd_mount "$@" ;;
         unlock)     cmd_unlock "$@" ;;
+        journal)    cmd_journal "$@" ;;
         install)    cmd_install "$@" ;;
         help|--help|-h) cmd_help ;;
         *)

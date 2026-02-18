@@ -78,14 +78,14 @@ Create a secure environment file that the systemd service will read:
 ```bash
 mkdir -p ~/.config/restic
 cat > ~/.config/restic/b2.env << 'EOF'
-B2_ACCOUNT_ID=004a1b2c3d4e5f0000000001
-B2_ACCOUNT_KEY=K004xYzAbCdEfGhIjKlMnOpQrStUvWx
-RESTIC_REPOSITORY=b2:nclack-restic-backup:
+B2_ACCOUNT_ID="004a1b2c3d4e5f0000000001"
+B2_ACCOUNT_KEY="K004xYzAbCdEfGhIjKlMnOpQrStUvWx"
+RESTIC_REPOSITORY="b2:neil-workstation-backup:"
 EOF
 chmod 600 ~/.config/restic/b2.env
 ```
 
-> **🔐 Note** — The trailing colon in `b2:bucket-name:` is required. It tells restic to use the bucket root.
+> **🔐 Note** — The trailing colon in `b2:bucket-name:` is **required**. It tells restic to use the bucket root. Always quote the values to avoid issues with special characters in keys.
 
 To use these credentials in your current shell:
 
@@ -123,23 +123,37 @@ restic version
 
 ```bash
 mkdir -p ~/Scripts/backup/restic
-# Move all four files into this directory:
-#   backup.sh
-#   backup.exclude
-#   restic-backup.service
-#   restic-backup.timer
+# Move all files into this directory:
+#   backup.sh, backup.exclude
+#   rbackup.sh, rbackup.exclude
+#   restic-backup.service, restic-backup.timer
+#   rbackup.service, rbackup.timer
 
 chmod +x ~/Scripts/backup/restic/backup.sh
+chmod +x ~/Scripts/backup/restic/rbackup.sh
+```
+
+### Create Command Symlinks
+
+```bash
+mkdir -p ~/.local/bin
+ln -sf ~/Scripts/backup/restic/backup.sh ~/.local/bin/backup
+ln -sf ~/Scripts/backup/restic/rbackup.sh ~/.local/bin/rbackup
 ```
 
 Your directory should look like:
 
 ```
 ~/Scripts/backup/restic/
-├── backup.sh                 # Main script — all commands live here
-├── backup.exclude            # Exclude patterns (node_modules, caches, etc.)
-├── restic-backup.service     # systemd service unit
-├── restic-backup.timer       # systemd timer (every 30 minutes)
+├── backup.sh                 # Cloud backup script (restic + B2)
+├── backup.exclude            # Cloud backup exclude patterns
+├── restic-backup.service     # systemd service (cloud, every 30 min)
+├── restic-backup.timer       # systemd timer (cloud)
+├── rbackup.sh                # Local backup script (rsync)
+├── rbackup.exclude           # Local backup exclude patterns (+ lock files)
+├── rbackup.service           # systemd service (local, every 10 min)
+├── rbackup.timer             # systemd timer (local)
+├── restic-backblaze-setup-guide.md  # This guide
 └── .repo-password.gpg        # Created during init (GPG-encrypted repo password)
 ```
 
@@ -174,6 +188,16 @@ This will:
 > To access your backups you need: **restic** + **the `.repo-password.gpg` file** + **your GPG private key**.
 > Lose any one of these and your backups are unrecoverable.
 
+### Verify the Repo Password
+
+To confirm the encrypted password file works:
+
+```bash
+gpg --decrypt ~/Scripts/backup/restic/.repo-password.gpg
+```
+
+This will prompt for your GPG passphrase and print the raw restic repo password.
+
 ### Run Your First Backup
 
 ```bash
@@ -186,38 +210,41 @@ This will:
 
 ## 4 · Enable Automated Backups
 
-The `install` command walks you through everything interactively:
+### Cloud Backup (restic, every 30 minutes)
 
 ```bash
-./backup.sh install
+backup install
 ```
 
-Or do it manually:
+### Local Backup (rsync, every 10 minutes)
 
 ```bash
-# Create the systemd user directory
+rbackup --install
+```
+
+Both commands walk you through the setup interactively. Or do it manually:
+
+```bash
 mkdir -p ~/.config/systemd/user
 
-# Symlink (not copy!) so edits to the originals take effect immediately
+# Cloud backup
 ln -sf ~/Scripts/backup/restic/restic-backup.service ~/.config/systemd/user/
 ln -sf ~/Scripts/backup/restic/restic-backup.timer   ~/.config/systemd/user/
+
+# Local backup
+ln -sf ~/Scripts/backup/restic/rbackup.service ~/.config/systemd/user/
+ln -sf ~/Scripts/backup/restic/rbackup.timer   ~/.config/systemd/user/
 
 # Reload and enable
 systemctl --user daemon-reload
 systemctl --user enable --now restic-backup.timer
+systemctl --user enable --now rbackup.timer
 ```
 
-### Verify It's Running
+### Verify They're Running
 
 ```bash
-# Check the timer
-systemctl --user status restic-backup.timer
-
-# See upcoming schedule
 systemctl --user list-timers
-
-# Watch a backup in real time
-journalctl --user -u restic-backup.service -f
 ```
 
 ### Enable Linger
@@ -258,14 +285,14 @@ gpg --list-secret-keys
 
 #### Step 3 — Recreate your credentials
 
-You'll need your B2 credentials. If you don't have them memorized (you shouldn't), log into [Backblaze](https://secure.backblaze.com/app_keys.htm) and create a new application key.
+You'll need your B2 credentials. Log into [Backblaze](https://secure.backblaze.com/app_keys.htm) and create a new application key (the old one was in `~/.config/restic/b2.env` which is in your backup, but you need credentials to access the backup).
 
 ```bash
 mkdir -p ~/.config/restic
 cat > ~/.config/restic/b2.env << 'EOF'
-B2_ACCOUNT_ID=your-key-id
-B2_ACCOUNT_KEY=your-application-key
-RESTIC_REPOSITORY=b2:neil-workstation-backup:
+B2_ACCOUNT_ID="your-key-id"
+B2_ACCOUNT_KEY="your-application-key"
+RESTIC_REPOSITORY="b2:your-bucket-name:"
 EOF
 chmod 600 ~/.config/restic/b2.env
 set -a && source ~/.config/restic/b2.env && set +a
@@ -337,6 +364,7 @@ ls ~/Restore/home/neil/
 cp -a ~/Restore/home/neil/Work ~/Work
 cp -a ~/Restore/home/neil/.config ~/.config
 cp -a ~/Restore/home/neil/.ssh ~/.ssh
+cp -a ~/Restore/home/neil/Scripts ~/Scripts
 # ... etc
 ```
 
@@ -375,12 +403,18 @@ cp ~/mnt/restic/snapshots/latest/home/neil/Work/important-project ~/Work/
 
 Press `Ctrl+C` in the first terminal to unmount.
 
-#### Step 8 — Re-enable automated backups
+#### Step 8 — Update credentials and re-enable backups
+
+The restored `~/.config/restic/b2.env` will have the old application key. Update it with the new one you created in Step 3, then:
 
 ```bash
-# Grab the backup scripts from the restore
 cd ~/Scripts/backup/restic
-./backup.sh install
+chmod +x backup.sh rbackup.sh
+mkdir -p ~/.local/bin
+ln -sf ~/Scripts/backup/restic/backup.sh ~/.local/bin/backup
+ln -sf ~/Scripts/backup/restic/rbackup.sh ~/.local/bin/rbackup
+backup install
+rbackup --install
 ```
 
 You're back in business.
@@ -389,27 +423,43 @@ You're back in business.
 
 ## 6 · Day-to-Day Commands
 
+### Cloud Backup (restic)
+
 | Command                    | What it does                                    |
 |----------------------------|-------------------------------------------------|
-| `backup.sh backup`        | Run an incremental backup right now              |
-| `backup.sh snapshots`     | List all available snapshots                     |
-| `backup.sh stats`         | Show repository size and dedup ratio             |
-| `backup.sh check`         | Verify repository integrity (run monthly)        |
-| `backup.sh prune`         | Apply retention policy and free space            |
-| `backup.sh restore`       | Restore latest snapshot to `~/Restore`           |
-| `backup.sh restore <id>`  | Restore a specific snapshot                      |
-| `backup.sh mount`         | FUSE-mount the repo for browsing                 |
-| `backup.sh unlock`        | Clear stale locks after interrupted backup       |
-| `backup.sh install`       | Walk through systemd timer setup                 |
-| `backup.sh help`          | Full help text                                   |
+| `backup backup`           | Run an incremental backup right now              |
+| `backup snapshots`        | List all available snapshots                     |
+| `backup stats`            | Show repository size and dedup ratio             |
+| `backup check`            | Verify repository integrity (run monthly)        |
+| `backup prune`            | Apply retention policy and free space            |
+| `backup restore`          | Restore latest snapshot to `~/Restore`           |
+| `backup restore <id>`     | Restore a specific snapshot                      |
+| `backup mount`            | FUSE-mount the repo for browsing                 |
+| `backup unlock`           | Clear stale locks after interrupted backup       |
+| `backup journal`          | Show recent systemd journal entries              |
+| `backup install`          | Walk through systemd timer setup                 |
+| `backup help`             | Full help text                                   |
+
+### Local Backup (rsync)
+
+| Command                      | What it does                                  |
+|------------------------------|-----------------------------------------------|
+| `rbackup`                   | Mirror home → backup drive                     |
+| `rbackup --restore`         | Restore backup → home (safe, no deletes)       |
+| `rbackup --restore --delete`| Restore backup → home (full mirror)            |
+| `rbackup --dry-run`         | Preview what would change                      |
+| `rbackup --status`          | Show backup age, size, drive space             |
+| `rbackup --journal`         | Show recent systemd journal entries            |
+| `rbackup --install`         | Walk through systemd timer setup               |
+| `rbackup --help`            | Full help text                                 |
 
 ---
 
 ## 7 · Troubleshooting
 
-### "Fatal: unable to open config file"
+### "Fatal: unable to open config file" / 401 errors
 
-The repository hasn't been initialized, or your credentials are wrong.
+The repository can't be reached, or your credentials are wrong.
 
 ```bash
 # Verify your env vars are loaded
@@ -419,6 +469,10 @@ echo $B2_ACCOUNT_ID        # Should show your key ID
 # Re-source if needed
 set -a && source ~/.config/restic/b2.env && set +a
 ```
+
+> **⚠️ Common gotcha** — The trailing colon in `b2:bucket-name:` is required. Without it, restic can't parse the path and auth fails before reaching Backblaze.
+
+> **⚠️ Special characters** — If your application key contains `/` or other special characters, make sure the values in `b2.env` are quoted.
 
 ### "Fatal: wrong password or no key found"
 
@@ -436,10 +490,10 @@ gpg --decrypt ~/Scripts/backup/restic/.repo-password.gpg
 
 ```bash
 # Check what restic is doing
-journalctl --user -u restic-backup.service -f
+backup journal
 
 # If it's locked from a previous interrupted run
-./backup.sh unlock
+backup unlock
 ```
 
 ### Timer not firing
@@ -474,28 +528,27 @@ Then reload: `gpgconf --kill gpg-agent`
 
 > **💡 Tip** — Alternatively, you can configure `pinentry-gnome3` or `pinentry-tty` depending on your session type. See `man gpg-agent` for details.
 
+### No desktop notifications from systemd timer
+
+The service files pass `DISPLAY`, `WAYLAND_DISPLAY`, and `DBUS_SESSION_BUS_ADDRESS` to enable notifications. If they're not working:
+
+```bash
+# Check if the variables are set in your session
+echo $DISPLAY $WAYLAND_DISPLAY $DBUS_SESSION_BUS_ADDRESS
+
+# Test notify-send directly
+notify-send "Test" "Does this work?"
+```
+
 ---
 
 ## 8 · Architecture Reference
 
 ### What Gets Backed Up
 
-| Path                 | Why                                                    |
-|----------------------|--------------------------------------------------------|
-| `~/Work`             | All project files — the primary target                 |
-| `~/Scripts`          | Automation and tooling (including this backup system)  |
-| `~/.config`          | Application configs, desktop settings, terminal prefs  |
-| `~/.local/share`     | App data, keyrings, fonts, bash history                |
-| `~/.ssh`             | SSH keys and config                                    |
-| `~/.gnupg`           | GPG keyring and trust database                         |
-| `~/.bashrc`          | Shell configuration                                    |
-| `~/.bash_profile`    | Login shell configuration                              |
-| `~/.profile`         | Session-wide environment                               |
-| `~/.bash_aliases`    | Shell aliases                                          |
-| `~/.gitconfig`       | Git configuration                                      |
-| `~/.tmux.conf`       | tmux configuration                                     |
+Everything in `$HOME` that isn't explicitly excluded. See `backup.exclude` and `rbackup.exclude` for the full list of exclusions.
 
-### What Gets Excluded
+### What Gets Excluded (both backups)
 
 | Pattern              | Why                                                    |
 |----------------------|--------------------------------------------------------|
@@ -505,11 +558,26 @@ Then reload: `gpgconf --kill gpg-agent`
 | `**/node_modules`    | Massive, fully reproducible from package.json          |
 | `**/.venv`, `**/venv`| Python venvs — reproducible from requirements.txt      |
 | `**/target/`         | Rust/Java build output                                 |
-| `**/*.iso`, `**/*.img`| Disk images — you're keeping these on a second drive  |
+| `**/*.iso`, `**/*.img`| Disk images — kept on a second drive                  |
 | `**/*.o`, `**/*.so`  | Compiled objects — rebuilt by make/gcc                  |
 | `.Trash*`            | Trash contents                                         |
+| `.mozilla`, browsers | Huge profiles, synced via browser accounts             |
+| `.local/share/Steam` | Game installs, re-downloadable                         |
+| `.local/share/flatpak`| App installs, reinstallable from repos               |
+| Containers/Podman    | Reproducible from Containerfiles                       |
 
-### Retention Policy
+### Additional Excludes (local backup only)
+
+| Pattern              | Why                                                    |
+|----------------------|--------------------------------------------------------|
+| `**/*.lock`          | Runtime lock files (not dependency manifests)           |
+| `**/SingletonLock`   | Browser singleton locks                                |
+| `.gnupg/*.lock`      | GPG agent locks                                        |
+| `.dbus`              | Desktop bus runtime                                    |
+
+> **Note** — Dependency lock files (`package-lock.json`, `Cargo.lock`, `poetry.lock`, `yarn.lock`, `Gemfile.lock`, `composer.lock`, `flake.lock`) are explicitly **preserved** via `!` exceptions.
+
+### Retention Policy (cloud)
 
 | Window  | Kept     |
 |---------|----------|
@@ -520,7 +588,10 @@ Then reload: `gpgconf --kill gpg-agent`
 
 ### Timer Schedule
 
-Backups fire every **30 minutes** with a 2-minute jitter window. Missed backups (laptop sleep, reboot) are caught up automatically via `Persistent=true`.
+| Backup | Interval    | Notes                                        |
+|--------|-------------|----------------------------------------------|
+| Cloud  | 30 minutes  | 2-min jitter, persistent across sleep         |
+| Local  | 10 minutes  | 30-sec jitter, skips if drive not mounted     |
 
 ---
 
@@ -545,9 +616,14 @@ Print this. Pin it to your wall. Tape it inside your laptop lid.
 │  3. Import GPG key from Proton Drive                    │
 │  4. Download .repo-password.gpg from Proton Drive       │
 │  5. Log into Backblaze, create new app key              │
-│  6. restic restore latest --target ~/Restore            │
-│  7. Move files into place                               │
-│  8. Re-run backup.sh install                            │
+│  6. Create ~/.config/restic/b2.env (QUOTE THE VALUES)   │
+│  7. set -a && source ~/.config/restic/b2.env && set +a  │
+│  8. export RESTIC_PASSWORD=$(gpg -qd .repo-password.gpg)│
+│  9. restic snapshots --compact                          │
+│  10. restic restore latest --target ~/Restore           │
+│  11. Move files into place                              │
+│  12. Update b2.env with new app key                     │
+│  13. Re-run backup install & rbackup --install          │
 │                                                         │
 └─────────────────────────────────────────────────────────┘
 ```
