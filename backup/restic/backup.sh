@@ -52,6 +52,83 @@ backup_trap() {
     notify_err "Backup failed — check 'backup journal' for details"
 }
 
+# ── VPN bypass for Backblaze B2 ─────────────────────────────────────
+# When Proton VPN is active, Backblaze traffic hangs. These functions
+# add host routes via the local (non-VPN) gateway so B2 traffic
+# bypasses the VPN tunnel. No-ops when no VPN is detected.
+LOCAL_GW=""
+LOCAL_IF=""
+VPN_BYPASS_ROUTES=()
+
+detect_local_gateway() {
+    # Find the non-VPN default route (skip proton* devices)
+    local route
+    route="$(ip route show default | grep -v proton | head -1)"
+    if [[ -z "$route" ]]; then
+        return 1
+    fi
+    LOCAL_GW="$(echo "$route" | awk '{for(i=1;i<=NF;i++) if($i=="via") print $(i+1)}')"
+    LOCAL_IF="$(echo "$route" | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}')"
+    if [[ -z "$LOCAL_GW" || -z "$LOCAL_IF" ]]; then
+        return 1
+    fi
+}
+
+setup_vpn_bypass() {
+    # Only needed when Proton VPN is active
+    if ! ip route show default | grep -q proton; then
+        return 0
+    fi
+
+    if ! detect_local_gateway; then
+        warn "VPN detected but could not find local gateway — B2 traffic will use VPN"
+        return 0
+    fi
+
+    info "Proton VPN detected — routing B2 traffic via ${LOCAL_GW} (${LOCAL_IF})"
+
+    # Resolve all Backblaze B2 endpoints
+    local endpoints=( api.backblazeb2.com )
+    local i
+    for i in $(seq 0 5); do
+        endpoints+=( "f$(printf '%03d' "$i").backblazeb2.com" )
+    done
+
+    local -A seen_ips=()
+    local host ip
+    for host in "${endpoints[@]}"; do
+        while IFS= read -r ip; do
+            [[ -n "$ip" ]] || continue
+            [[ -z "${seen_ips[$ip]+x}" ]] || continue
+            seen_ips[$ip]=1
+
+            if pkexec /usr/bin/ip route add "$ip/32" via "$LOCAL_GW" dev "$LOCAL_IF" 2>/dev/null; then
+                VPN_BYPASS_ROUTES+=( "$ip/32" )
+            fi
+        done < <(getent ahostsv4 "$host" 2>/dev/null | awk '{print $1}' | sort -u)
+    done
+
+    if [[ ${#VPN_BYPASS_ROUTES[@]} -gt 0 ]]; then
+        ok "Added ${#VPN_BYPASS_ROUTES[@]} bypass route(s)"
+    else
+        warn "No bypass routes added — DNS resolution may have failed"
+    fi
+
+    # Ensure cleanup on exit
+    trap teardown_vpn_bypass EXIT
+}
+
+teardown_vpn_bypass() {
+    local route
+    for route in "${VPN_BYPASS_ROUTES[@]}"; do
+        pkexec /usr/bin/ip route del "$route" via "$LOCAL_GW" dev "$LOCAL_IF" 2>/dev/null || true
+    done
+    if [[ ${#VPN_BYPASS_ROUTES[@]} -gt 0 ]]; then
+        info "Cleaned up ${#VPN_BYPASS_ROUTES[@]} bypass route(s)"
+        VPN_BYPASS_ROUTES=()
+    fi
+}
+
 # ── Environment check ────────────────────────────────────────────────
 check_deps() {
     local missing=()
@@ -154,6 +231,8 @@ cmd_backup() {
     export_password
     setup_logging
 
+    setup_vpn_bypass
+
     info "Backing up ${BACKUP_PATH} to ${RESTIC_REPOSITORY}"
     restic backup \
         --exclude-file="$EXCLUDE_FILE" \
@@ -177,6 +256,8 @@ cmd_prune() {
     check_env
     export_password
 
+    setup_vpn_bypass
+
     info "Retention: ${KEEP_DAILY}d / ${KEEP_WEEKLY}w / ${KEEP_MONTHLY}m / ${KEEP_YEARLY}y"
     restic forget \
         --keep-daily "$KEEP_DAILY" \
@@ -196,6 +277,7 @@ cmd_snapshots() {
     check_deps
     check_env
     export_password
+    setup_vpn_bypass
 
     restic snapshots --compact
 }
@@ -205,6 +287,7 @@ cmd_stats() {
     check_deps
     check_env
     export_password
+    setup_vpn_bypass
 
     restic stats
     echo ""
@@ -216,6 +299,7 @@ cmd_check() {
     check_deps
     check_env
     export_password
+    setup_vpn_bypass
 
     restic check --verbose
     ok "Repository integrity verified."
@@ -234,6 +318,8 @@ cmd_restore() {
     read -rp "Continue? (y/N): " confirm
     [[ "$confirm" =~ ^[Yy]$ ]] || { info "Aborted."; exit 0; }
 
+    setup_vpn_bypass
+
     mkdir -p "$target"
     restic restore "$snapshot" --target "$target" --verbose
     ok "Restored to ${target}"
@@ -247,6 +333,8 @@ cmd_mount() {
     export_password
 
     local mountpoint="${1:-${HOME}/mnt/restic}"
+    setup_vpn_bypass
+
     mkdir -p "$mountpoint"
     info "Mounting at ${mountpoint} — press Ctrl+C to unmount"
     restic mount "$mountpoint"
@@ -257,6 +345,7 @@ cmd_unlock() {
     check_deps
     check_env
     export_password
+    setup_vpn_bypass
 
     restic unlock
     ok "Repository unlocked."
@@ -271,6 +360,8 @@ cmd_install() {
 
     local service_src="${SCRIPT_DIR}/restic-backup.service"
     local timer_src="${SCRIPT_DIR}/restic-backup.timer"
+    local polkit_src="${SCRIPT_DIR}/49-restic-backup-ip-route.rules"
+    local polkit_dst="/etc/polkit-1/rules.d/49-restic-backup-ip-route.rules"
     local systemd_dir="${HOME}/.config/systemd/user"
 
     if [[ ! -f "$service_src" || ! -f "$timer_src" ]]; then
@@ -281,14 +372,21 @@ cmd_install() {
     echo -e "This will set up the systemd user timer for automated backups.\n"
     echo -e "${BOLD}Steps:${NC}\n"
 
-    echo "  1. Create the systemd user directory (if needed):"
+    echo "  1. Install polkit rule for VPN bypass (requires sudo, one-time):"
+    echo -e "     When Proton VPN is active, the backup script uses pkexec to add"
+    echo -e "     host routes so Backblaze B2 traffic bypasses the VPN tunnel."
+    echo -e "     This polkit rule allows that to happen without a password prompt."
+    echo -e "     ${CYAN}sudo cp ${polkit_src} ${polkit_dst}${NC}"
+    echo -e "     ${CYAN}sudo chmod 644 ${polkit_dst}${NC}\n"
+
+    echo "  2. Create the systemd user directory (if needed):"
     echo -e "     ${CYAN}mkdir -p ${systemd_dir}${NC}\n"
 
-    echo "  2. Symlink the service and timer files:"
+    echo "  3. Symlink the service and timer files:"
     echo -e "     ${CYAN}ln -sf ${service_src} ${systemd_dir}/restic-backup.service${NC}"
     echo -e "     ${CYAN}ln -sf ${timer_src} ${systemd_dir}/restic-backup.timer${NC}\n"
 
-    echo "  3. Create your environment file for B2 credentials:"
+    echo "  4. Create your environment file for B2 credentials:"
     echo -e "     ${CYAN}mkdir -p ${HOME}/.config/restic${NC}"
     echo -e "     ${CYAN}cat > ${HOME}/.config/restic/b2.env << 'EOF'"
     echo "B2_ACCOUNT_ID=your-key-id"
@@ -297,27 +395,47 @@ cmd_install() {
     echo -e "EOF${NC}"
     echo -e "     ${CYAN}chmod 600 ${HOME}/.config/restic/b2.env${NC}\n"
 
-    echo "  4. Reload systemd and enable the timer:"
+    echo "  5. Reload systemd and enable the timer:"
     echo -e "     ${CYAN}systemctl --user daemon-reload${NC}"
     echo -e "     ${CYAN}systemctl --user enable --now restic-backup.timer${NC}\n"
 
-    echo "  5. Verify it's active:"
+    echo "  6. Verify it's active:"
     echo -e "     ${CYAN}systemctl --user status restic-backup.timer${NC}"
     echo -e "     ${CYAN}systemctl --user list-timers${NC}\n"
 
-    echo -e "  6. (Optional) Test a manual run:"
+    echo -e "  7. (Optional) Test a manual run:"
     echo -e "     ${CYAN}systemctl --user start restic-backup.service${NC}"
     echo -e "     ${CYAN}journalctl --user -u restic-backup.service -f${NC}\n"
 
     echo -e "${YELLOW}NOTE:${NC} For timers to run when you're not logged into a GUI session:"
     echo -e "     ${CYAN}loginctl enable-linger \$(whoami)${NC}\n"
 
-    read -rp "Run steps 1-2 now (symlink only)? (y/N): " confirm
+    # ── Step 1: Polkit rule ──────────────────────────────────────────
+    if [[ -f "$polkit_dst" ]]; then
+        ok "Polkit rule already installed at ${polkit_dst}"
+    elif [[ -f "$polkit_src" ]]; then
+        read -rp "Install polkit rule now (step 1, requires sudo)? (y/N): " confirm_polkit
+        if [[ "$confirm_polkit" =~ ^[Yy]$ ]]; then
+            sudo mkdir -p /etc/polkit-1/rules.d
+            sudo cp "$polkit_src" "$polkit_dst"
+            sudo chmod 644 "$polkit_dst"
+            ok "Polkit rule installed at ${polkit_dst}"
+        else
+            warn "Skipped polkit rule. VPN bypass will prompt for a password."
+        fi
+    else
+        warn "Polkit rule file not found at ${polkit_src} — skipping"
+    fi
+
+    echo ""
+
+    # ── Steps 2-3: Symlinks ──────────────────────────────────────────
+    read -rp "Run steps 2-3 now (symlink service/timer)? (y/N): " confirm
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
         mkdir -p "$systemd_dir"
         ln -sf "$service_src" "${systemd_dir}/restic-backup.service"
         ln -sf "$timer_src" "${systemd_dir}/restic-backup.timer"
-        ok "Symlinks created. Complete steps 3-6 manually."
+        ok "Symlinks created. Complete steps 4-7 manually."
     else
         info "No changes made. Run the commands above when ready."
     fi

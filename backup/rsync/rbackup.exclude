@@ -17,6 +17,15 @@ Downloads
 .var/app/*/cache
 snap
 
+# ── Language toolchains (reinstallable) ────────────────────────────
+.rustup
+.cargo
+.nvm
+.npm
+go
+.dotnet
+.vscode
+
 # ── Caches & temp files ──────────────────────────────────────────────
 .cache
 .Cache

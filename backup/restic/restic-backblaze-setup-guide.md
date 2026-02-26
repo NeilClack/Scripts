@@ -15,7 +15,8 @@ This guide covers everything from creating your Backblaze account to restoring y
 5. [Restoring Your Data](#5--restoring-your-data)
 6. [Day-to-Day Commands](#6--day-to-day-commands)
 7. [Troubleshooting](#7--troubleshooting)
-8. [Architecture Reference](#8--architecture-reference)
+8. [VPN Bypass & Polkit](#8--vpn-bypass--polkit)
+9. [Architecture Reference](#9--architecture-reference)
 
 ---
 
@@ -145,16 +146,17 @@ Your directory should look like:
 
 ```
 ~/Scripts/backup/restic/
-├── backup.sh                 # Cloud backup script (restic + B2)
-├── backup.exclude            # Cloud backup exclude patterns
-├── restic-backup.service     # systemd service (cloud, every 30 min)
-├── restic-backup.timer       # systemd timer (cloud)
-├── rbackup.sh                # Local backup script (rsync)
-├── rbackup.exclude           # Local backup exclude patterns (+ lock files)
-├── rbackup.service           # systemd service (local, every 10 min)
-├── rbackup.timer             # systemd timer (local)
-├── restic-backblaze-setup-guide.md  # This guide
-└── .repo-password.gpg        # Created during init (GPG-encrypted repo password)
+├── backup.sh                            # Cloud backup script (restic + B2)
+├── backup.exclude                       # Cloud backup exclude patterns
+├── 49-restic-backup-ip-route.rules      # Polkit rule for VPN bypass (see §8)
+├── restic-backup.service                # systemd service (cloud, every 30 min)
+├── restic-backup.timer                  # systemd timer (cloud)
+├── rbackup.sh                           # Local backup script (rsync)
+├── rbackup.exclude                      # Local backup exclude patterns (+ lock files)
+├── rbackup.service                      # systemd service (local, every 10 min)
+├── rbackup.timer                        # systemd timer (local)
+├── restic-backblaze-setup-guide.md      # This guide
+└── .repo-password.gpg                   # Created during init (GPG-encrypted repo password)
 ```
 
 ---
@@ -528,6 +530,23 @@ Then reload: `gpgconf --kill gpg-agent`
 
 > **💡 Tip** — Alternatively, you can configure `pinentry-gnome3` or `pinentry-tty` depending on your session type. See `man gpg-agent` for details.
 
+### Backup hangs or times out with Proton VPN active
+
+The VPN bypass should handle this automatically. If it's not working:
+
+```bash
+# Is the polkit rule installed?
+ls -la /etc/polkit-1/rules.d/49-restic-backup-ip-route.rules
+
+# If missing, install it:
+backup install   # Follow the polkit step
+
+# Test pkexec manually (should NOT prompt for password):
+pkexec /usr/bin/ip route show
+```
+
+If `pkexec` still prompts for a password, the polkit rule isn't being picked up. Check that the file is owned by root and has mode 644.
+
 ### No desktop notifications from systemd timer
 
 The service files pass `DISPLAY`, `WAYLAND_DISPLAY`, and `DBUS_SESSION_BUS_ADDRESS` to enable notifications. If they're not working:
@@ -542,7 +561,91 @@ notify-send "Test" "Does this work?"
 
 ---
 
-## 8 · Architecture Reference
+## 8 · VPN Bypass & Polkit
+
+### The Problem
+
+When Proton VPN is active, all traffic routes through the VPN tunnel. Backblaze B2 connections hang or time out through the Proton tunnel, causing backups to fail. This is a known issue with Proton VPN and certain cloud storage providers.
+
+### The Solution
+
+The backup script detects when Proton VPN is active (by checking for a `proton*` network device in the default route) and temporarily adds **host routes** for Backblaze B2 IP addresses. These routes send B2 traffic via the local (non-VPN) gateway instead of through the tunnel.
+
+How it works:
+
+1. **`setup_vpn_bypass()`** — Runs before any restic command that contacts B2. Resolves all Backblaze endpoints (`api.backblazeb2.com`, `f000-f005.backblazeb2.com`) to IP addresses, then adds a `/32` host route for each IP via the local gateway using `pkexec /usr/bin/ip route add`.
+2. **`teardown_vpn_bypass()`** — Registered as an `EXIT` trap. Removes all the host routes that were added, restoring normal routing.
+
+When no VPN is detected, both functions are no-ops.
+
+### Why pkexec + polkit (not sudo)
+
+Adding routes requires root privileges. The options were:
+
+| Approach | Problem |
+|----------|---------|
+| `sudo` with NOPASSWD sudoers rule | Works, but requires maintaining a sudoers drop-in file and `sudo` in non-interactive systemd services can be finicky |
+| `pkexec` with polkit rule | Native D-Bus privilege escalation, designed for exactly this use case, works cleanly from systemd user services |
+
+The polkit approach is the standard Freedesktop way to grant specific root privileges to a user without a password.
+
+### The Polkit Rule
+
+The file `49-restic-backup-ip-route.rules` contains:
+
+```javascript
+polkit.addRule(function(action, subject) {
+    if (action.id === "org.freedesktop.policykit.exec" &&
+        action.lookup("program") === "/usr/bin/ip" &&
+        subject.user === "nclack") {
+        return polkit.Result.YES;
+    }
+});
+```
+
+**What this allows:** User `nclack` can run `/usr/bin/ip` (and only `/usr/bin/ip`) via `pkexec` without a password prompt.
+
+**What this does NOT allow:** It does not grant blanket root access. Only the `ip` command is authorized, and only via `pkexec` (not `sudo`). Other users are unaffected.
+
+**File naming:** The `49-` prefix controls evaluation order. Polkit processes rules files in lexicographic order; `49` runs before the default `50-default.rules` that would otherwise prompt for a password.
+
+### Installing the Rule
+
+The rule file lives in the script directory and gets copied to the system polkit directory during setup:
+
+```bash
+# Automatic (via the install command)
+backup install    # Offers to install the polkit rule as step 1
+
+# Manual
+sudo cp ~/Scripts/backup/restic/49-restic-backup-ip-route.rules /etc/polkit-1/rules.d/
+sudo chmod 644 /etc/polkit-1/rules.d/49-restic-backup-ip-route.rules
+```
+
+No restart is needed — polkit picks up new rules immediately.
+
+### Verifying It Works
+
+```bash
+# Should run without a password prompt:
+pkexec /usr/bin/ip route show
+
+# With Proton VPN connected, run any B2-contacting command:
+backup snapshots
+# Check that bypass routes were added:
+ip route | grep backblaze  # (nothing after the command completes — cleanup removes them)
+```
+
+### Security Considerations
+
+- The rule is scoped to a single user (`nclack`) and a single program (`/usr/bin/ip`)
+- `ip route add/del` only modifies the routing table — it cannot read files, execute programs, or escalate further
+- On a new system, you must explicitly install the rule via `backup install` (it's not automatic)
+- If you change your username, update the `subject.user` field in the rules file
+
+---
+
+## 9 · Architecture Reference
 
 ### What Gets Backed Up
 
@@ -624,6 +727,7 @@ Print this. Pin it to your wall. Tape it inside your laptop lid.
 │  11. Move files into place                              │
 │  12. Update b2.env with new app key                     │
 │  13. Re-run backup install & rbackup --install          │
+│      (installs polkit rule + systemd timers)            │
 │                                                         │
 └─────────────────────────────────────────────────────────┘
 ```
