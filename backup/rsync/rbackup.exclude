@@ -1,5 +1,5 @@
 # rbackup exclude patterns
-# Used by ~/Scripts/backup/restic/rbackup.sh
+# Used by ~/Scripts/backup/rsync/rbackup.sh
 #
 # These mirror the restic backup.exclude patterns plus additional
 # lock files that shouldn't be copied to a local mirror.
@@ -30,7 +30,7 @@ snap
 **/node_modules
 **/.venv
 **/venv
-**/.env
+**/.env/
 **/target/
 **/_build/
 **/build/

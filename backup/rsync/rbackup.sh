@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ──────────────────────────────────────────────────────────────────────
 # rbackup — Local rsync mirror to secondary drive
-# Location: ~/Scripts/backup/restic/rbackup.sh
+# Location: ~/Scripts/backup/rsync/rbackup.sh
 # ──────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -199,7 +199,7 @@ cmd_status() {
   info "Last modified:     ${last_modified}"
   info "Backup size:       $(du -sh "$DESTINATION" 2>/dev/null | cut -f1)"
   info "Drive usage:"
-  df -h /mnt/local_backup | tail -1 | awk '{printf "  Total: %s  Used: %s  Free: %s  Usage: %s\n", $2, $3, $4, $5}'
+  df -h /run/media/nclack/UGREEN | tail -1 | awk '{printf "  Total: %s  Used: %s  Free: %s  Usage: %s\n", $2, $3, $4, $5}'
 }
 
 cmd_journal() {
@@ -262,7 +262,7 @@ ${BOLD}USAGE${NC}
     rbackup [option]
 
 ${BOLD}OPTIONS${NC}
-    ${GREEN}(none)${NC}            Run backup — mirror \$HOME to /mnt/local_backup
+    ${GREEN}(none)${NC}            Run backup — mirror \$HOME to UGREEN drive
     ${GREEN}--restore${NC}         Restore backup → \$HOME (safe, no deletes)
     ${GREEN}--restore --delete${NC} Restore backup → \$HOME (full mirror, deletes extras)
     ${GREEN}--dry-run${NC}         Show what would change without doing anything
@@ -279,7 +279,7 @@ ${BOLD}PATHS${NC}
 
 ${BOLD}SYSTEMD${NC}
     Timer runs every 10 minutes via rbackup.timer
-    Skips silently if /mnt/local_backup is not mounted
+    Skips silently if /run/media/nclack/UGREEN is not mounted
 
 ${BOLD}EXAMPLES${NC}
     rbackup                    # Mirror home → backup drive
@@ -293,9 +293,10 @@ ${BOLD}EXAMPLES${NC}
 
 # ── Main dispatch ────────────────────────────────────────────────────
 main() {
-  local cmd="${1:---help}"
+  local cmd="${1:-}"
 
   case "$cmd" in
+  "") cmd_backup ;;
   --restore)
     shift
     cmd_restore "$@"
@@ -317,9 +318,4 @@ main() {
   esac
 }
 
-# If called with no arguments, run backup
-if [[ $# -eq 0 ]]; then
-  cmd_backup
-else
-  main "$@"
-fi
+main "$@"
