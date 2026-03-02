@@ -1,6 +1,5 @@
 [Unit]
 Description=Local rsync backup to secondary drive
-ConditionPathIsMountPoint=/mnt/local_backup
 
 [Service]
 Type=oneshot
@@ -10,7 +9,7 @@ IOSchedulingClass=idle
 # Pass display session for desktop notifications
 PassEnvironment=DISPLAY WAYLAND_DISPLAY DBUS_SESSION_BUS_ADDRESS
 
-ExecStart=%h/Scripts/backup/restic/rbackup.sh
+ExecStart=%h/Scripts/backup/rsync/rbackup.sh
 
 # Prevent runaway resource usage
 CPUQuota=50%

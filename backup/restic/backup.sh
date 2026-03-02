@@ -56,6 +56,7 @@ backup_trap() {
 # When Proton VPN is active, Backblaze traffic hangs. These functions
 # add host routes via the local (non-VPN) gateway so B2 traffic
 # bypasses the VPN tunnel. No-ops when no VPN is detected.
+IP_CMD="$(command -v ip)"
 LOCAL_GW=""
 LOCAL_IF=""
 VPN_BYPASS_ROUTES=()
@@ -63,7 +64,7 @@ VPN_BYPASS_ROUTES=()
 detect_local_gateway() {
     # Find the non-VPN default route (skip proton* devices)
     local route
-    route="$(ip route show default | grep -v proton | head -1)"
+    route="$($IP_CMD route show default | grep -v proton | head -1)"
     if [[ -z "$route" ]]; then
         return 1
     fi
@@ -76,7 +77,7 @@ detect_local_gateway() {
 
 setup_vpn_bypass() {
     # Only needed when Proton VPN is active
-    if ! ip route show default | grep -q proton; then
+    if ! $IP_CMD route show default | grep -q proton; then
         return 0
     fi
 
@@ -102,7 +103,7 @@ setup_vpn_bypass() {
             [[ -z "${seen_ips[$ip]+x}" ]] || continue
             seen_ips[$ip]=1
 
-            if pkexec /usr/bin/ip route add "$ip/32" via "$LOCAL_GW" dev "$LOCAL_IF" 2>/dev/null; then
+            if pkexec "$IP_CMD" route add "$ip/32" via "$LOCAL_GW" dev "$LOCAL_IF" 2>/dev/null; then
                 VPN_BYPASS_ROUTES+=( "$ip/32" )
             fi
         done < <(getent ahostsv4 "$host" 2>/dev/null | awk '{print $1}' | sort -u)
@@ -121,7 +122,7 @@ setup_vpn_bypass() {
 teardown_vpn_bypass() {
     local route
     for route in "${VPN_BYPASS_ROUTES[@]}"; do
-        pkexec /usr/bin/ip route del "$route" via "$LOCAL_GW" dev "$LOCAL_IF" 2>/dev/null || true
+        pkexec "$IP_CMD" route del "$route" via "$LOCAL_GW" dev "$LOCAL_IF" 2>/dev/null || true
     done
     if [[ ${#VPN_BYPASS_ROUTES[@]} -gt 0 ]]; then
         info "Cleaned up ${#VPN_BYPASS_ROUTES[@]} bypass route(s)"
@@ -137,7 +138,7 @@ check_deps() {
     done
     if [[ ${#missing[@]} -gt 0 ]]; then
         err "Missing required commands: ${missing[*]}"
-        err "Install with: sudo dnf install ${missing[*]}"
+        err "Install restic and gpg via your system package manager."
         exit 1
     fi
 }

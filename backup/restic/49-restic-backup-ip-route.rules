@@ -1,13 +1,17 @@
-// Allow user nclack to run /usr/bin/ip via pkexec without authentication.
+// Allow user nclack to run `ip` via pkexec without authentication.
 // Used by the restic backup script to add/remove host routes that bypass
 // Proton VPN for Backblaze B2 traffic.
 //
-// Install: sudo cp this-file /etc/polkit-1/rules.d/
-//   — or — backup install  (does it for you)
+// NixOS: This rule is managed declaratively in configuration.nix via
+//        security.polkit.extraConfig. This file is kept as a reference
+//        and for non-NixOS systems.
+//
+// Non-NixOS install: sudo cp this-file /etc/polkit-1/rules.d/
 
 polkit.addRule(function(action, subject) {
     if (action.id === "org.freedesktop.policykit.exec" &&
-        action.lookup("program") === "/usr/bin/ip" &&
+        (action.lookup("program") === "/usr/bin/ip" ||
+         action.lookup("program") === "/run/current-system/sw/bin/ip") &&
         subject.user === "nclack") {
         return polkit.Result.YES;
     }

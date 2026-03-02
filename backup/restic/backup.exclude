@@ -1,17 +1,84 @@
 # Restic backup exclude patterns
 # Used by ~/Scripts/backup/restic/backup.sh
+#
+# Philosophy: Back up everything YOU created or configured.
+# Exclude anything that can be reinstalled, rebuilt, or re-downloaded.
+# On NixOS, the system itself is declarative — only user data matters.
 
-# ── Explicitly excluded directories ──────────────────────────────────
+# ── Explicitly excluded top-level directories ────────────────────────
 Downloads
+ISOs
+Desktop
+Public
+Templates
 
-# ── Large runtime / app data you don't need ──────────────────────────
+# ── .config: exclude all app data, keep what matters ─────────────────
+# Exclude everything in .config, then whitelist essentials.
+# Uses single-level glob (.config/*) so restic still descends into
+# whitelisted dirs. Last matching pattern wins.
+.config/*
+!.config/BambuStudio
+!.config/mozilla
+!.config/nvim
+!.config/restic
+!.config/systemd
+!.config/git
+!.config/gh
+!.config/dconf
+!.config/autostart
+!.config/gtk-2.0
+!.config/gtk-3.0
+!.config/gtk-4.0
+!.config/fontconfig
+!.config/keepassxc
+!.config/btop
+!.config/environment.d
+!.config/gongfu
+!.config/user-dirs.dirs
+!.config/user-dirs.locale
+!.config/mimeapps.list
+
+# ── .local/share: mostly app runtime, keep specific data ─────────────
 .local/share/Trash
 .local/share/Steam
 .local/share/containers
 .local/share/flatpak
 .local/share/gnome-boxes
+.local/share/nix
+.local/share/nvim
+.local/share/claude
+.local/share/bolt-launcher
+.local/share/GitKrakenCLI
+.local/share/akonadi
+.local/share/akonadi_migration_agent
+.local/share/baloo
+.local/share/kactivitymanagerd
+.local/share/klipper
+.local/share/epiphany
+.local/share/plasma-systemmonitor
+.local/share/xdg-desktop-portal
+
+# ── Flatpak app data (.var) — keep BambuStudio, exclude the rest ─────
+.var/app/com.adamcake.Bolt
+.var/app/com.discordapp.Discord
+.var/app/com.spotify.Client
+.var/app/com.google.Chrome
+.var/app/com.google.ChromeDev
+.var/app/org.chromium.Chromium
+.var/app/io.github.ungoogled_software.ungoogled_chromium
+.var/app/net.waterfox.waterfox
+.var/app/io.gitlab.librewolf-community
+.var/app/org.mozilla.firefox
+
+# ── Language / toolchain caches ──────────────────────────────────────
+go
+.npm
+.dotnet
+.copilot
+.vscode/extensions
+.compose-cache
+.nv
 .steam
-.var/app/*/cache
 snap
 
 # ── Caches & temp files ──────────────────────────────────────────────
@@ -27,7 +94,6 @@ snap
 **/node_modules
 **/.venv
 **/venv
-**/.env
 **/target/
 **/_build/
 **/build/
@@ -51,15 +117,6 @@ snap
 .Trash*
 **/.git/objects/pack/*.tmp
 **/core.[0-9]*
-
-# ── Podman / container storage ───────────────────────────────────────
-.config/containers/storage
-
-# ── Browser profiles (huge, not worth backing up) ────────────────────
-.mozilla
-.config/google-chrome
-.config/chromium
-.config/BraveSoftware
 
 # ── Editor / IDE swap & session files ────────────────────────────────
 **/*.swp

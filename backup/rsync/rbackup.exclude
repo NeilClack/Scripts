@@ -68,7 +68,7 @@ go
 .config/containers/storage
 
 # ── Browser profiles ─────────────────────────────────────────────────
-.mozilla
+# .mozilla is backed up (Firefox logins, bookmarks, extensions — saves re-auth)
 .config/google-chrome
 .config/chromium
 .config/BraveSoftware

@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # ──────────────────────────────────────────────────────────────────────
-# rbackup — Local rsync mirror to secondary drive
+# rbackup — Local rsync mirror to backup drives
 # Location: ~/Scripts/backup/rsync/rbackup.sh
+#
+# Destinations:
+#   BACKUPS  — internal NVMe at /mnt/backups (always, if mounted)
+#   UGREEN   — external USB at /run/media/nclack/UGREEN (when available)
 # ──────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -12,7 +16,11 @@ LOG_DIR="${HOME}/.local/share/rbackup"
 LOG_FILE="${LOG_DIR}/rbackup.log"
 
 SOURCE="${HOME}/"
-DESTINATION="/run/media/nclack/UGREEN/home/$(whoami)/"
+DEST_LOCAL="/mnt/backups/home/$(whoami)/"
+DEST_USB="/run/media/nclack/UGREEN/home/$(whoami)/"
+
+UGREEN_LABEL="UGREEN"
+UGREEN_MOUNT="/run/media/nclack/UGREEN"
 
 # ── Color output ─────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -48,15 +56,7 @@ backup_trap() {
 # ── Preflight checks ────────────────────────────────────────────────
 check_deps() {
   if ! command -v rsync &>/dev/null; then
-    err "rsync not found. Install with: sudo dnf install rsync"
-    exit 1
-  fi
-}
-
-check_mount() {
-  if ! mountpoint -q /run/media/nclack/UGREEN 2>/dev/null; then
-    err "/run/media/nclack/UGREEN is not mounted."
-    err "Mount your backup drive first, then try again."
+    err "rsync not found. Add it to your Nix packages."
     exit 1
   fi
 }
@@ -67,6 +67,46 @@ check_exclude_file() {
     err "It should be alongside this script at: ${SCRIPT_DIR}/rbackup.exclude"
     exit 1
   fi
+}
+
+# ── Mount helpers ────────────────────────────────────────────────────
+is_local_available() {
+  mountpoint -q /mnt/backups 2>/dev/null
+}
+
+is_usb_available() {
+  mountpoint -q "$UGREEN_MOUNT" 2>/dev/null
+}
+
+try_mount_usb() {
+  # If UGREEN is plugged in but not mounted, try to mount it
+  if [[ -e "/dev/disk/by-label/${UGREEN_LABEL}" ]] && ! is_usb_available; then
+    info "UGREEN detected but not mounted — attempting mount..."
+    mkdir -p "$UGREEN_MOUNT"
+    if mount "/dev/disk/by-label/${UGREEN_LABEL}" "$UGREEN_MOUNT" 2>/dev/null; then
+      ok "UGREEN mounted at ${UGREEN_MOUNT}"
+    else
+      warn "Could not mount UGREEN (may need sudo). Skipping USB backup."
+    fi
+  fi
+}
+
+# ── Rsync wrapper ────────────────────────────────────────────────────
+run_rsync() {
+  local dest="$1"
+  shift
+  mkdir -p "$dest"
+  rsync \
+    --archive \
+    --delete \
+    --delete-excluded \
+    --human-readable \
+    --itemize-changes \
+    --stats \
+    --partial \
+    --exclude-from="$EXCLUDE_FILE" \
+    "$@" \
+    "$SOURCE" "$dest"
 }
 
 # ── Logging ──────────────────────────────────────────────────────────
@@ -81,29 +121,43 @@ cmd_backup() {
 
   header "Local backup — $(date '+%Y-%m-%d %H:%M:%S')"
   check_deps
-  check_mount
   check_exclude_file
   setup_logging
 
-  # Ensure destination exists with correct ownership
-  mkdir -p "$DESTINATION"
+  try_mount_usb
 
-  info "Syncing ${SOURCE} → ${DESTINATION}"
-  info "Using exclude file: ${EXCLUDE_FILE}"
-  echo ""
+  local backed_up=0
 
-  rsync \
-    --archive \
-    --delete \
-    --delete-excluded \
-    --human-readable \
-    --itemize-changes \
-    --stats \
-    --partial \
-    --exclude-from="$EXCLUDE_FILE" \
-    "$SOURCE" "$DESTINATION"
+  # Backup to internal NVMe (BACKUPS)
+  if is_local_available; then
+    info "Syncing ${SOURCE} → ${DEST_LOCAL}"
+    echo ""
+    run_rsync "$DEST_LOCAL"
+    echo ""
+    ok "BACKUPS backup completed"
+    backed_up=1
+  else
+    warn "/mnt/backups is not mounted — skipping internal backup"
+  fi
 
-  echo ""
+  # Backup to external USB (UGREEN)
+  if is_usb_available; then
+    info "Syncing ${SOURCE} → ${DEST_USB}"
+    echo ""
+    run_rsync "$DEST_USB"
+    echo ""
+    ok "UGREEN backup completed"
+    backed_up=1
+  else
+    warn "UGREEN is not available — skipping USB backup"
+  fi
+
+  if [[ $backed_up -eq 0 ]]; then
+    err "No backup destinations available"
+    notify_err "No backup destinations available"
+    exit 1
+  fi
+
   ok "Backup completed — $(date '+%Y-%m-%d %H:%M:%S')"
   notify_ok "Local backup completed"
 
@@ -111,18 +165,50 @@ cmd_backup() {
 }
 
 cmd_restore() {
-  header "Restoring from local backup"
+  header "Restore from backup"
   check_deps
-  check_mount
 
-  if [[ ! -d "$DESTINATION" ]]; then
-    err "Backup directory not found: ${DESTINATION}"
-    err "Nothing to restore from."
+  try_mount_usb
+
+  # Build list of available sources
+  local sources=()
+  local labels=()
+  if is_local_available && [[ -d "$DEST_LOCAL" ]]; then
+    sources+=("$DEST_LOCAL")
+    labels+=("BACKUPS (${DEST_LOCAL})")
+  fi
+  if is_usb_available && [[ -d "$DEST_USB" ]]; then
+    sources+=("$DEST_USB")
+    labels+=("UGREEN (${DEST_USB})")
+  fi
+
+  if [[ ${#sources[@]} -eq 0 ]]; then
+    err "No backup sources available to restore from."
     exit 1
   fi
 
-  warn "This will overwrite files in ${SOURCE} with the local backup."
-  warn "Source:      ${DESTINATION}"
+  # Let user pick source
+  local restore_src
+  if [[ ${#sources[@]} -eq 1 ]]; then
+    restore_src="${sources[0]}"
+    info "Restoring from: ${labels[0]}"
+  else
+    echo "Available backup sources:"
+    for i in "${!labels[@]}"; do
+      echo "  $((i + 1))) ${labels[$i]}"
+    done
+    echo ""
+    read -rp "Select source (1-${#sources[@]}): " choice
+    if [[ "$choice" -ge 1 && "$choice" -le ${#sources[@]} ]] 2>/dev/null; then
+      restore_src="${sources[$((choice - 1))]}"
+    else
+      err "Invalid selection."
+      exit 1
+    fi
+  fi
+
+  warn "This will overwrite files in ${SOURCE} with the backup."
+  warn "Source:      ${restore_src}"
   warn "Destination: ${SOURCE}"
   echo ""
   warn "Files in your home directory that don't exist in the backup will NOT be deleted."
@@ -145,7 +231,7 @@ cmd_restore() {
     delete_flag="--delete"
   fi
 
-  info "Restoring ${DESTINATION} → ${SOURCE}"
+  info "Restoring ${restore_src} → ${SOURCE}"
   echo ""
 
   rsync \
@@ -155,7 +241,7 @@ cmd_restore() {
     --stats \
     --partial \
     ${delete_flag} \
-    "$DESTINATION" "$SOURCE"
+    "$restore_src" "$SOURCE"
 
   echo ""
   ok "Restore completed — $(date '+%Y-%m-%d %H:%M:%S')"
@@ -165,41 +251,70 @@ cmd_restore() {
 cmd_dry_run() {
   header "Dry run — $(date '+%Y-%m-%d %H:%M:%S')"
   check_deps
-  check_mount
   check_exclude_file
 
-  info "Showing what would change (no files will be modified):"
-  echo ""
+  try_mount_usb
 
-  rsync \
-    --archive \
-    --delete \
-    --delete-excluded \
-    --human-readable \
-    --itemize-changes \
-    --stats \
-    --dry-run \
-    --exclude-from="$EXCLUDE_FILE" \
-    "$SOURCE" "$DESTINATION"
+  local has_dest=0
+
+  if is_local_available; then
+    info "BACKUPS — what would change:"
+    echo ""
+    run_rsync "$DEST_LOCAL" --dry-run
+    echo ""
+    has_dest=1
+  else
+    warn "/mnt/backups is not mounted — skipping"
+  fi
+
+  if is_usb_available; then
+    info "UGREEN — what would change:"
+    echo ""
+    run_rsync "$DEST_USB" --dry-run
+    echo ""
+    has_dest=1
+  else
+    warn "UGREEN is not available — skipping"
+  fi
+
+  if [[ $has_dest -eq 0 ]]; then
+    err "No backup destinations available for dry run"
+    exit 1
+  fi
+}
+
+show_dest_status() {
+  local label="$1" dest="$2" mountpoint="$3"
+
+  if ! mountpoint -q "$mountpoint" 2>/dev/null; then
+    info "${label}: not mounted"
+    return
+  fi
+
+  if [[ ! -d "$dest" ]]; then
+    info "${label}: mounted but no backup found at ${dest}"
+    return
+  fi
+
+  local last_modified
+  last_modified="$(stat -c '%y' "$dest" 2>/dev/null | cut -d. -f1)"
+
+  info "${label}:"
+  info "  Backup location:  ${dest}"
+  info "  Last modified:    ${last_modified}"
+  info "  Backup size:      $(du -sh "$dest" 2>/dev/null | cut -f1)"
+  info "  Drive usage:"
+  df -h "$mountpoint" | tail -1 | awk '{printf "    Total: %s  Used: %s  Free: %s  Usage: %s\n", $2, $3, $4, $5}'
 }
 
 cmd_status() {
   header "Backup status"
-  check_mount
 
-  if [[ ! -d "$DESTINATION" ]]; then
-    warn "No backup found at ${DESTINATION}"
-    exit 0
-  fi
+  try_mount_usb
 
-  local last_modified
-  last_modified="$(stat -c '%y' "$DESTINATION" 2>/dev/null | cut -d. -f1)"
-
-  info "Backup location:  ${DESTINATION}"
-  info "Last modified:     ${last_modified}"
-  info "Backup size:       $(du -sh "$DESTINATION" 2>/dev/null | cut -f1)"
-  info "Drive usage:"
-  df -h /run/media/nclack/UGREEN | tail -1 | awk '{printf "  Total: %s  Used: %s  Free: %s  Usage: %s\n", $2, $3, $4, $5}'
+  show_dest_status "BACKUPS" "$DEST_LOCAL" "/mnt/backups"
+  echo ""
+  show_dest_status "UGREEN" "$DEST_USB" "$UGREEN_MOUNT"
 }
 
 cmd_journal() {
@@ -256,13 +371,13 @@ cmd_install() {
 
 cmd_help() {
   echo -e "
-${BOLD}rbackup${NC} — Local rsync mirror to secondary drive
+${BOLD}rbackup${NC} — Local rsync mirror to backup drives
 
 ${BOLD}USAGE${NC}
     rbackup [option]
 
 ${BOLD}OPTIONS${NC}
-    ${GREEN}(none)${NC}            Run backup — mirror \$HOME to UGREEN drive
+    ${GREEN}(none)${NC}            Run backup — mirror \$HOME to available drives
     ${GREEN}--restore${NC}         Restore backup → \$HOME (safe, no deletes)
     ${GREEN}--restore --delete${NC} Restore backup → \$HOME (full mirror, deletes extras)
     ${GREEN}--dry-run${NC}         Show what would change without doing anything
@@ -271,22 +386,25 @@ ${BOLD}OPTIONS${NC}
     ${GREEN}--install${NC}         Walk through systemd timer setup
     ${GREEN}--help${NC}            Show this help message
 
+${BOLD}DESTINATIONS${NC}
+    BACKUPS:  ${DEST_LOCAL}  (internal NVMe, always if mounted)
+    UGREEN:   ${DEST_USB}  (external USB, when plugged in)
+
 ${BOLD}PATHS${NC}
     Source:       ${SOURCE}
-    Destination:  ${DESTINATION}
     Excludes:     ${EXCLUDE_FILE}
     Log:          ${LOG_FILE}
 
 ${BOLD}SYSTEMD${NC}
     Timer runs every 10 minutes via rbackup.timer
-    Skips silently if /run/media/nclack/UGREEN is not mounted
+    Script handles mount checks internally — no ConditionPath needed
 
 ${BOLD}EXAMPLES${NC}
-    rbackup                    # Mirror home → backup drive
+    rbackup                    # Mirror home → all available drives
     rbackup --dry-run          # Preview changes
-    rbackup --restore          # Restore (keeps extra files in \$HOME)
+    rbackup --restore          # Restore (pick source, keeps extras)
     rbackup --restore --delete # Restore (exact mirror, deletes extras)
-    rbackup --status           # Check last backup time and drive space
+    rbackup --status           # Check backup times and drive space
     rbackup --journal          # View recent backup logs
 "
 }
